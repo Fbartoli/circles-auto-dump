@@ -57,8 +57,8 @@ export function loadConfig(): Configuration {
   const feeRecipient = parseHexAddress(requireEnv("FEE_RECIPIENT"), "FEE_RECIPIENT");
 
   const feeBps = parseInt(process.env.FEE_BPS || "2000", 10);
-  if (isNaN(feeBps) || feeBps < 1 || feeBps > 10000) {
-    throw new Error("FEE_BPS must be between 1 (0.01%) and 5000 (50%)");
+  if (isNaN(feeBps) || feeBps < 0 || feeBps > 10000) {
+    throw new Error("FEE_BPS must be between 0 (0%) and 10000 (100%)");
   }
 
   const dbPath = process.env.DB_PATH || "./data/users.db";
