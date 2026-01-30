@@ -5,10 +5,14 @@ import { isModuleEnabled, execViaModule, execSingleViaModule } from "./module-ex
 import {
   getMintableForUser,
   getGroupTokenAddress,
+  getDemurrageGroupTokenAddress,
+  getPersonalTokenAddress,
   getWrappedBalance,
   getErc1155PersonalBalance,
   encodeMint,
+  encodeUnwrapPersonalTokens,
   encodeGroupMintAndApprove,
+  encodeConvertDemurrageToStatic,
   encodeApproveOnly,
   encodeUsdcTransfer,
 } from "./circles.ts";
@@ -140,26 +144,39 @@ async function processUser(
     };
   }
 
-  // 2. Get group token address and all balances
-  const groupToken = await getGroupTokenAddress(publicClient);
+  // 2. Get group token addresses (both types), personal token address, and all balances
+  const groupToken = await getGroupTokenAddress(publicClient); // s-gCRC (type 1)
+  const demurrageGroupToken = await getDemurrageGroupTokenAddress(publicClient); // gCRC (type 0)
+  const personalToken = await getPersonalTokenAddress(publicClient, userAddress);
 
-  const [existingGroupBalance, erc1155PersonalBalance, mintableAmount] = await Promise.all([
-    getWrappedBalance(publicClient, groupToken, userAddress),
+  // Check if personal token is deployed (non-zero address)
+  const zeroAddress = "0x0000000000000000000000000000000000000000" as `0x${string}`;
+  const hasPersonalToken = personalToken !== zeroAddress;
+  const hasDemurrageGroupToken = demurrageGroupToken !== zeroAddress;
+
+  const [existingGroupBalance, demurrageGroupBalance, erc1155PersonalBalance, wrappedPersonalBalance, mintableAmount] = await Promise.all([
+    getWrappedBalance(publicClient, groupToken, userAddress), // s-gCRC
+    hasDemurrageGroupToken ? getWrappedBalance(publicClient, demurrageGroupToken, userAddress) : Promise.resolve(0n), // gCRC
     getErc1155PersonalBalance(publicClient, userAddress),
+    hasPersonalToken ? getWrappedBalance(publicClient, personalToken, userAddress) : Promise.resolve(0n),
     getMintableForUser(publicClient, userAddress),
   ]);
 
-  // Total amount to convert = ERC-1155 balance + mintable (new UBI)
-  // Note: groupMint works directly with ERC-1155 personal tokens
-  const amountToConvert = erc1155PersonalBalance + mintableAmount;
-  // Total to sell = already group tokens + what we'll convert
-  const totalSellAmount = existingGroupBalance + amountToConvert;
+  // Total amount to convert = ERC-1155 balance + wrapped personal ERC-20 + mintable (new UBI)
+  // Note: wrapped personal ERC-20 must be unwrapped first, then all go through groupMint
+  const amountToConvert = erc1155PersonalBalance + wrappedPersonalBalance + mintableAmount;
+
+  // Total to sell = existing s-gCRC + gCRC (will be converted to s-gCRC) + personal tokens to convert
+  // Everything ends up as s-gCRC for a single swap order
+  const totalSellAmount = existingGroupBalance + demurrageGroupBalance + amountToConvert;
   const minSwapWei = BigInt(Math.floor(config.minSwapAmountCrc * 1e18));
 
   logger.info("User balances", {
     userAddress,
     existingGroupBalance: existingGroupBalance.toString(),
+    demurrageGroupBalance: demurrageGroupBalance.toString(),
     erc1155PersonalBalance: erc1155PersonalBalance.toString(),
+    wrappedPersonalBalance: wrappedPersonalBalance.toString(),
     mintableAmount: mintableAmount.toString(),
     amountToConvert: amountToConvert.toString(),
     totalSellAmount: totalSellAmount.toString(),
@@ -188,19 +205,41 @@ async function processUser(
     };
   }
 
-  // 3. Mint (if needed) → groupMint → wrap → approve
+  // 3. Convert gCRC → s-gCRC (if needed) → Unwrap personal (if needed) → Mint (if needed) → groupMint → wrap → approve
   let mintTxHash: string | null = null;
   let finalSellAmount = totalSellAmount;
   try {
+    // Step 0: Convert demurrage group tokens (gCRC) to static group tokens (s-gCRC)
+    if (demurrageGroupBalance > 0n) {
+      const convertTxs = encodeConvertDemurrageToStatic(demurrageGroupToken, demurrageGroupBalance);
+      const convertTxHash = await execViaModule(walletClient, publicClient, userAddress, convertTxs);
+      logger.info("Converted gCRC to s-gCRC", {
+        userAddress,
+        txHash: convertTxHash,
+        amount: demurrageGroupBalance.toString(),
+      });
+    }
+
     if (amountToConvert > 0n) {
-      // Step A: personalMint to get ERC-1155 tokens (if there's new UBI to claim)
+      // Step A: Unwrap wrapped personal ERC-20 tokens to ERC-1155 (if any)
+      if (wrappedPersonalBalance > 0n) {
+        const unwrapTx = encodeUnwrapPersonalTokens(personalToken, wrappedPersonalBalance);
+        const unwrapTxHash = await execSingleViaModule(walletClient, publicClient, userAddress, unwrapTx);
+        logger.info("Unwrapped personal ERC-20 to ERC-1155", {
+          userAddress,
+          txHash: unwrapTxHash,
+          amount: wrappedPersonalBalance.toString(),
+        });
+      }
+
+      // Step B: personalMint to get ERC-1155 tokens (if there's new UBI to claim)
       if (mintableAmount > 0n) {
         const mintTx = encodeMint();
         mintTxHash = await execSingleViaModule(walletClient, publicClient, userAddress, mintTx);
         logger.info("Personal mint executed", { userAddress, mintTxHash });
       }
 
-      // Step B: groupMint → wrap → approve
+      // Step C: groupMint → wrap → approve
       // Uses groupMint which is simpler than operateFlowMatrix
       const batchTxs = encodeGroupMintAndApprove(
         userAddress,
@@ -215,11 +254,11 @@ async function processUser(
         convertAmount: amountToConvert.toString(),
         approvedAmount: totalSellAmount.toString(),
       });
-    } else {
-      // No conversion needed, just approve existing group balance
-      const approveTxs = encodeApproveOnly(groupToken, existingGroupBalance);
+    } else if (demurrageGroupBalance > 0n || existingGroupBalance > 0n) {
+      // No personal conversion needed, just approve existing s-gCRC balance (including converted gCRC)
+      const approveTxs = encodeApproveOnly(groupToken, totalSellAmount);
       mintTxHash = await execViaModule(walletClient, publicClient, userAddress, approveTxs);
-      logger.info("Approve executed for existing group balance", { userAddress, mintTxHash });
+      logger.info("Approve executed for existing group balance", { userAddress, mintTxHash, amount: totalSellAmount.toString() });
     }
   } catch (err) {
     logger.error("Mint/groupMint/approve failed", { userAddress, error: err instanceof Error ? err.message : String(err) });

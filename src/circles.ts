@@ -200,7 +200,7 @@ export async function getPersonalTokenAddress(
 }
 
 /**
- * Get the wrapped ERC-20 group token address for BASE_GROUP (type=1).
+ * Get the wrapped ERC-20 group token address for BASE_GROUP (type=1, static/inflation-adjusted).
  */
 export async function getGroupTokenAddress(
   publicClient: PublicClient,
@@ -210,6 +210,22 @@ export async function getGroupTokenAddress(
     abi: erc20LiftAbi,
     functionName: "erc20Circles",
     args: [1, BASE_GROUP],
+  });
+  return address as `0x${string}`;
+}
+
+/**
+ * Get the demurrage group token address for BASE_GROUP (type=0, gCRC).
+ * This is different from the static group token (s-gCRC).
+ */
+export async function getDemurrageGroupTokenAddress(
+  publicClient: PublicClient,
+): Promise<`0x${string}`> {
+  const address = await publicClient.readContract({
+    address: ERC20_LIFT,
+    abi: erc20LiftAbi,
+    functionName: "erc20Circles",
+    args: [0, BASE_GROUP],
   });
   return address as `0x${string}`;
 }
@@ -239,6 +255,21 @@ export function encodeMint(): ModuleTransaction {
     value: 0n,
     data: encodeFunctionData({ abi: hubAbi, functionName: "personalMint" }),
   };
+}
+
+/**
+ * Encode unwrap of wrapped personal ERC-20 tokens back to ERC-1155.
+ */
+export function encodeUnwrapPersonalTokens(
+  personalToken: `0x${string}`,
+  amount: bigint,
+): ModuleTransaction {
+  const unwrapData = encodeFunctionData({
+    abi: wrappedPersonalTokenAbi,
+    functionName: "unwrap",
+    args: [amount],
+  });
+  return { to: personalToken, value: 0n, data: unwrapData };
 }
 
 /**
@@ -477,6 +508,51 @@ export function encodeApproveOnly(
     args: [VAULT_RELAYER, amount],
   });
   return [{ to: token, value: 0n, data: approveData }];
+}
+
+/**
+ * Encode unwrap of demurrage group token (gCRC, type 0) back to ERC-1155.
+ * The wrapped token's unwrap function converts ERC-20 back to ERC-1155.
+ */
+export function encodeUnwrapDemurrageGroupToken(
+  demurrageGroupToken: `0x${string}`,
+  amount: bigint,
+): ModuleTransaction {
+  const unwrapData = encodeFunctionData({
+    abi: wrappedPersonalTokenAbi, // Same unwrap signature
+    functionName: "unwrap",
+    args: [amount],
+  });
+  return { to: demurrageGroupToken, value: 0n, data: unwrapData };
+}
+
+/**
+ * Encode conversion of demurrage group tokens (gCRC) to static group tokens (s-gCRC).
+ * Unwraps gCRC back to ERC-1155, then wraps as s-gCRC (type 1).
+ */
+export function encodeConvertDemurrageToStatic(
+  demurrageGroupToken: `0x${string}`,
+  amount: bigint,
+): ModuleTransaction[] {
+  const txs: ModuleTransaction[] = [];
+
+  // 1. Unwrap gCRC (demurrage) back to ERC-1155 group tokens
+  const unwrapData = encodeFunctionData({
+    abi: wrappedPersonalTokenAbi,
+    functionName: "unwrap",
+    args: [amount],
+  });
+  txs.push({ to: demurrageGroupToken, value: 0n, data: unwrapData });
+
+  // 2. Wrap as s-gCRC (static, type=1)
+  const wrapData = encodeFunctionData({
+    abi: hubAbi,
+    functionName: "wrap",
+    args: [BASE_GROUP, amount, 1],
+  });
+  txs.push({ to: HUB_V2, value: 0n, data: wrapData });
+
+  return txs;
 }
 
 /**
