@@ -556,10 +556,10 @@ export function encodeConvertDemurrageToStatic(
 }
 
 /**
- * Encode a USDC transfer as a ModuleTransaction.
+ * Encode an ERC-20 transfer as a ModuleTransaction (for fee transfers).
  */
-export function encodeUsdcTransfer(
-  usdcAddress: `0x${string}`,
+export function encodeErc20Transfer(
+  tokenAddress: `0x${string}`,
   recipient: `0x${string}`,
   amount: bigint,
 ): ModuleTransaction {
@@ -568,5 +568,5 @@ export function encodeUsdcTransfer(
     functionName: "transfer",
     args: [recipient, amount],
   });
-  return { to: usdcAddress, value: 0n, data };
+  return { to: tokenAddress, value: 0n, data };
 }

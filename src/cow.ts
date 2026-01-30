@@ -11,7 +11,7 @@ import type { SwapStatus } from "./types.ts";
 import type { ModuleTransaction } from "./module-executor.ts";
 import { logger } from "./logger.ts";
 
-export const USDC_GNOSIS = "0x2a22f9c3b484c3629090FeED35F17Ff8F88f76F0" as const;
+export const EURE_GNOSIS = "0x420CA0f9B9b604cE0fd9C18EF134C705e5Fa3430" as const;
 export const GPV2_SETTLEMENT = "0x9008D19f58AAbD9eD0D60971565AA8510560ab41" as const;
 
 const POLL_INTERVAL_MS = 30_000;
@@ -54,7 +54,7 @@ export async function getQuoteAndSubmitOrder(
     from,
     sellToken,
     sellAmount: sellAmount.toString(),
-    buyToken: USDC_GNOSIS,
+    buyToken: EURE_GNOSIS,
   });
 
   let quoteResponse;
@@ -62,7 +62,7 @@ export async function getQuoteAndSubmitOrder(
     quoteResponse = await orderBookApi.getQuote({
       kind: OrderQuoteSideKindSell.SELL,
       sellToken,
-      buyToken: USDC_GNOSIS,
+      buyToken: EURE_GNOSIS,
       sellAmountBeforeFee: sellAmount.toString(),
       from,
       signingScheme: SigningScheme.PRESIGN,

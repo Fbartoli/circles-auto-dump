@@ -14,10 +14,10 @@ import {
   encodeGroupMintAndApprove,
   encodeConvertDemurrageToStatic,
   encodeApproveOnly,
-  encodeUsdcTransfer,
+  encodeErc20Transfer,
 } from "./circles.ts";
 import {
-  USDC_GNOSIS,
+  EURE_GNOSIS,
   getQuoteAndSubmitOrder,
   encodePresign,
   pollOrderStatus,
@@ -362,7 +362,7 @@ async function processUser(
   let feeTxHash: string | null = null;
   if (feeAmount > 0n) {
     try {
-      const feeTx = encodeUsdcTransfer(USDC_GNOSIS, config.feeRecipient, feeAmount);
+      const feeTx = encodeErc20Transfer(EURE_GNOSIS, config.feeRecipient, feeAmount);
       feeTxHash = await execSingleViaModule(walletClient, publicClient, userAddress, feeTx);
       logger.info("Fee transfer executed", {
         userAddress,
