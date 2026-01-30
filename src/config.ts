@@ -57,7 +57,7 @@ export function loadConfig(): Configuration {
   const feeRecipient = parseHexAddress(requireEnv("FEE_RECIPIENT"), "FEE_RECIPIENT");
 
   const feeBps = parseInt(process.env.FEE_BPS || "2000", 10);
-  if (isNaN(feeBps) || feeBps < 1 || feeBps > 5000) {
+  if (isNaN(feeBps) || feeBps < 1 || feeBps > 10000) {
     throw new Error("FEE_BPS must be between 1 (0.01%) and 5000 (50%)");
   }
 
