@@ -1,0 +1,17 @@
+{
+  "name": "circles-auto-dump",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@circles-sdk/sdk": "^0.29.2",
+    "@cowprotocol/cow-sdk": "^7.2.13",
+    "viem": "^2.44.4"
+  }
+}

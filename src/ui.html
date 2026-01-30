@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Circles Auto-Dump Relay</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: monospace; max-width: 720px; margin: 0 auto; padding: 1rem; background: #1a1a2e; color: #eee; }
+    h1 { margin-bottom: 1rem; font-size: 1.2rem; color: #7dd3fc; }
+    section { margin-bottom: 1.5rem; border: 1px solid #333; padding: 1rem; border-radius: 4px; }
+    h2 { font-size: 0.9rem; margin-bottom: 0.5rem; color: #a78bfa; }
+    input { background: #222; border: 1px solid #444; color: #eee; padding: 0.4rem; width: 100%; margin-bottom: 0.5rem; border-radius: 2px; font-family: monospace; }
+    button { background: #4f46e5; color: #fff; border: none; padding: 0.4rem 0.8rem; cursor: pointer; border-radius: 2px; font-family: monospace; margin-right: 0.5rem; margin-bottom: 0.5rem; }
+    button:hover { background: #6366f1; }
+    button.danger { background: #dc2626; }
+    button.danger:hover { background: #ef4444; }
+    pre { background: #0f0f1a; padding: 0.5rem; margin-top: 0.5rem; overflow-x: auto; font-size: 0.8rem; border-radius: 2px; max-height: 300px; overflow-y: auto; }
+    .status { display: inline-block; padding: 0.1rem 0.4rem; border-radius: 2px; font-size: 0.75rem; }
+    .status.active { background: #16a34a; }
+    .status.paused { background: #d97706; }
+    .status.ineligible { background: #dc2626; }
+    .row { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.3rem; }
+  </style>
+</head>
+<body>
+  <h1>Circles Auto-Dump Relay</h1>
+
+  <section>
+    <h2>Health</h2>
+    <button onclick="getHealth()">Refresh</button>
+    <pre id="health">Loading...</pre>
+  </section>
+
+  <section>
+    <h2>Check Eligibility</h2>
+    <div class="row">
+      <input id="eligAddr" placeholder="0x... (Safe address)">
+      <button onclick="checkEligibility()">Check</button>
+    </div>
+    <pre id="eligResult" hidden></pre>
+  </section>
+
+  <section>
+    <h2>Register User</h2>
+    <div class="row">
+      <input id="regAddr" placeholder="0x... (Safe address)">
+      <button onclick="registerUser()">Register</button>
+    </div>
+    <pre id="regResult" hidden></pre>
+  </section>
+
+  <section>
+    <h2>Users</h2>
+    <button onclick="getUsers()">Refresh</button>
+    <pre id="users">Loading...</pre>
+  </section>
+
+  <section>
+    <h2>User Detail</h2>
+    <div class="row">
+      <input id="detailAddr" placeholder="0x... (user address)">
+      <button onclick="getUserDetail()">Get</button>
+      <button class="danger" onclick="pauseUser()">Pause</button>
+    </div>
+    <pre id="detailResult" hidden></pre>
+  </section>
+
+  <section>
+    <h2>Trigger Cycle</h2>
+    <button onclick="triggerCycle()">Run Now</button>
+    <pre id="cycleResult" hidden></pre>
+  </section>
+
+  <script>
+    const BASE = '';
+
+    async function api(path, opts) {
+      const res = await fetch(BASE + path, opts);
+      return { status: res.status, data: await res.json() };
+    }
+
+    function show(id, data) {
+      const el = document.getElementById(id);
+      el.hidden = false;
+      el.textContent = JSON.stringify(data, null, 2);
+    }
+
+    async function getHealth() {
+      const { data } = await api('/health');
+      show('health', data);
+    }
+
+    async function checkEligibility() {
+      const addr = document.getElementById('eligAddr').value.trim();
+      if (!addr) return;
+      const { data } = await api(`/eligibility/${addr}`);
+      show('eligResult', data);
+    }
+
+    async function registerUser() {
+      const addr = document.getElementById('regAddr').value.trim();
+      if (!addr) return;
+      const { data, status } = await api('/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ address: addr }),
+      });
+      show('regResult', { status, ...data });
+    }
+
+    async function getUsers() {
+      const { data } = await api('/users');
+      show('users', data);
+    }
+
+    async function getUserDetail() {
+      const addr = document.getElementById('detailAddr').value.trim();
+      if (!addr) return;
+      const { data } = await api(`/users/${addr}`);
+      show('detailResult', data);
+    }
+
+    async function pauseUser() {
+      const addr = document.getElementById('detailAddr').value.trim();
+      if (!addr) return;
+      const { data } = await api(`/users/${addr}`, { method: 'DELETE' });
+      show('detailResult', data);
+    }
+
+    async function triggerCycle() {
+      show('cycleResult', { message: 'Running...' });
+      const { data } = await api('/process', { method: 'POST' });
+      show('cycleResult', data);
+    }
+
+    getHealth();
+    getUsers();
+  </script>
+</body>
+</html>
