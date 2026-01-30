@@ -6,12 +6,12 @@ import {
   getMintableForUser,
   getGroupTokenAddress,
   getWrappedBalance,
+  getErc1155PersonalBalance,
   encodeMint,
-  encodeFlowWrapApprove,
+  encodeGroupMintAndApprove,
   encodeApproveOnly,
   encodeUsdcTransfer,
 } from "./circles.ts";
-import { findFlowToGroup } from "./pathfinder.ts";
 import {
   USDC_GNOSIS,
   getQuoteAndSubmitOrder,
@@ -140,20 +140,28 @@ async function processUser(
     };
   }
 
-  // 2. Get group token address, existing balance, and mintable amount
+  // 2. Get group token address and all balances
   const groupToken = await getGroupTokenAddress(publicClient);
-  const [existingGroupBalance, mintableAmount] = await Promise.all([
+
+  const [existingGroupBalance, erc1155PersonalBalance, mintableAmount] = await Promise.all([
     getWrappedBalance(publicClient, groupToken, userAddress),
+    getErc1155PersonalBalance(publicClient, userAddress),
     getMintableForUser(publicClient, userAddress),
   ]);
 
-  const totalSellAmount = existingGroupBalance + mintableAmount;
+  // Total amount to convert = ERC-1155 balance + mintable (new UBI)
+  // Note: groupMint works directly with ERC-1155 personal tokens
+  const amountToConvert = erc1155PersonalBalance + mintableAmount;
+  // Total to sell = already group tokens + what we'll convert
+  const totalSellAmount = existingGroupBalance + amountToConvert;
   const minSwapWei = BigInt(Math.floor(config.minSwapAmountCrc * 1e18));
 
   logger.info("User balances", {
     userAddress,
     existingGroupBalance: existingGroupBalance.toString(),
+    erc1155PersonalBalance: erc1155PersonalBalance.toString(),
     mintableAmount: mintableAmount.toString(),
+    amountToConvert: amountToConvert.toString(),
     totalSellAmount: totalSellAmount.toString(),
   });
 
@@ -180,35 +188,41 @@ async function processUser(
     };
   }
 
-  // 3. Mint → find trust path → flow to group → wrap → approve
+  // 3. Mint (if needed) → groupMint → wrap → approve
   let mintTxHash: string | null = null;
+  let finalSellAmount = totalSellAmount;
   try {
-    if (mintableAmount > 0n) {
-      // Step A: personalMint to get ERC-1155 tokens
-      const mintTx = encodeMint();
-      mintTxHash = await execSingleViaModule(walletClient, publicClient, userAddress, mintTx);
-      logger.info("Personal mint executed", { userAddress, mintTxHash });
+    if (amountToConvert > 0n) {
+      // Step A: personalMint to get ERC-1155 tokens (if there's new UBI to claim)
+      if (mintableAmount > 0n) {
+        const mintTx = encodeMint();
+        mintTxHash = await execSingleViaModule(walletClient, publicClient, userAddress, mintTx);
+        logger.info("Personal mint executed", { userAddress, mintTxHash });
+      }
 
-      // Step B: Find trust path from user to BASE_GROUP via Circles pathfinder
-      const flowMatrix = await findFlowToGroup(userAddress, mintableAmount);
-
-      // Step C: operateFlowMatrix + wrap(group) + approve — all in one batch
-      const batchTxs = encodeFlowWrapApprove(flowMatrix, mintableAmount, groupToken, totalSellAmount);
-      const flowTxHash = await execViaModule(walletClient, publicClient, userAddress, batchTxs);
-      logger.info("Flow + wrap + approve executed", {
+      // Step B: groupMint → wrap → approve
+      // Uses groupMint which is simpler than operateFlowMatrix
+      const batchTxs = encodeGroupMintAndApprove(
         userAddress,
-        flowTxHash,
-        mintedAmount: mintableAmount.toString(),
+        amountToConvert,
+        groupToken,
+        totalSellAmount,
+      );
+      const conversionTxHash = await execViaModule(walletClient, publicClient, userAddress, batchTxs);
+      logger.info("Group mint + wrap + approve executed", {
+        userAddress,
+        txHash: conversionTxHash,
+        convertAmount: amountToConvert.toString(),
         approvedAmount: totalSellAmount.toString(),
       });
     } else {
-      // No mint needed, just approve existing group balance
+      // No conversion needed, just approve existing group balance
       const approveTxs = encodeApproveOnly(groupToken, existingGroupBalance);
       mintTxHash = await execViaModule(walletClient, publicClient, userAddress, approveTxs);
       logger.info("Approve executed for existing group balance", { userAddress, mintTxHash });
     }
   } catch (err) {
-    logger.error("Mint/flow/approve failed", { userAddress, error: err instanceof Error ? err.message : String(err) });
+    logger.error("Mint/groupMint/approve failed", { userAddress, error: err instanceof Error ? err.message : String(err) });
     return {
       userAddress,
       startedAt,
@@ -233,10 +247,10 @@ async function processUser(
       orderBookApi,
       userAddress,
       groupToken,
-      totalSellAmount,
+      finalSellAmount,
       config.slippageBps,
     );
-    logger.info("Order submitted", { userAddress, orderId, sellAmount: totalSellAmount.toString() });
+    logger.info("Order submitted", { userAddress, orderId, sellAmount: finalSellAmount.toString() });
   } catch (err) {
     logger.error("Swap order submission failed", { userAddress, error: err instanceof Error ? err.message : String(err) });
     return {

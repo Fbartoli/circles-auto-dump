@@ -9,6 +9,8 @@ export interface FlowMatrixData {
   flowEdges: { streamSinkId: number; amount: string }[];
   streams: { sourceCoordinate: number; flowEdgeIds: number[]; data: string }[];
   packedCoordinates: string;
+  /** The actual amount that will be transferred (may be less than requested due to trust path limits) */
+  actualFlowAmount: bigint;
 }
 
 /**
@@ -72,5 +74,6 @@ export async function findFlowToGroup(
         : (s.data || "0x"),
     })),
     packedCoordinates: matrix.packedCoordinates,
+    actualFlowAmount: flowAmount,
   };
 }

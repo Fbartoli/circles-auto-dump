@@ -40,29 +40,21 @@ const hubAbi = [
     outputs: [],
   },
   {
-    name: "operateFlowMatrix",
+    name: "unwrap",
+    type: "function",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "_amount", type: "uint256" }],
+    outputs: [],
+  },
+  {
+    name: "groupMint",
     type: "function",
     stateMutability: "nonpayable",
     inputs: [
-      { name: "_flowVertices", type: "address[]" },
-      {
-        name: "_flow",
-        type: "tuple[]",
-        components: [
-          { name: "streamSinkId", type: "uint16" },
-          { name: "amount", type: "uint192" },
-        ],
-      },
-      {
-        name: "_streams",
-        type: "tuple[]",
-        components: [
-          { name: "sourceCoordinate", type: "uint16" },
-          { name: "flowEdgeIds", type: "uint16[]" },
-          { name: "data", type: "bytes" },
-        ],
-      },
-      { name: "_packedCoordinates", type: "bytes" },
+      { name: "_group", type: "address" },
+      { name: "_collateralAvatars", type: "address[]" },
+      { name: "_amounts", type: "uint256[]" },
+      { name: "_data", type: "bytes" },
     ],
     outputs: [],
   },
@@ -75,6 +67,28 @@ const hubAbi = [
       { name: "trustee", type: "address" },
     ],
     outputs: [{ name: "", type: "bool" }],
+  },
+  // ERC-1155 balanceOf to check raw token balance in Hub
+  {
+    name: "balanceOf",
+    type: "function",
+    stateMutability: "view",
+    inputs: [
+      { name: "account", type: "address" },
+      { name: "id", type: "uint256" },
+    ],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+] as const;
+
+// ERC-20 wrapped personal token ABI (includes unwrap)
+const wrappedPersonalTokenAbi = [
+  {
+    name: "unwrap",
+    type: "function",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "_amount", type: "uint256" }],
+    outputs: [],
   },
 ] as const;
 
@@ -153,6 +167,23 @@ export async function getMintableForUser(
 }
 
 /**
+ * Get the ERC-1155 balance of a user's personal token in the Hub.
+ * Token ID = user address converted to uint256.
+ */
+export async function getErc1155PersonalBalance(
+  publicClient: PublicClient,
+  userAddress: `0x${string}`,
+): Promise<bigint> {
+  const tokenId = BigInt(userAddress);
+  return publicClient.readContract({
+    address: HUB_V2,
+    abi: hubAbi,
+    functionName: "balanceOf",
+    args: [userAddress, tokenId],
+  });
+}
+
+/**
  * Get the wrapped ERC-20 personal token address for a user (type=0).
  */
 export async function getPersonalTokenAddress(
@@ -208,6 +239,174 @@ export function encodeMint(): ModuleTransaction {
     value: 0n,
     data: encodeFunctionData({ abi: hubAbi, functionName: "personalMint" }),
   };
+}
+
+/**
+ * Encode groupMint → wrap(group) → approve batch.
+ * Uses groupMint to directly convert ERC-1155 personal tokens to group tokens.
+ * This is simpler than operateFlowMatrix and works when the group trusts the user.
+ */
+export function encodeGroupMintAndApprove(
+  userAddress: `0x${string}`,
+  convertAmount: bigint,
+  groupToken: `0x${string}`,
+  approveAmount: bigint,
+): ModuleTransaction[] {
+  const txs: ModuleTransaction[] = [];
+
+  // 1. groupMint — mint group tokens using user's personal tokens as collateral
+  const groupMintData = encodeFunctionData({
+    abi: hubAbi,
+    functionName: "groupMint",
+    args: [
+      BASE_GROUP,
+      [userAddress], // User's own personal token as collateral
+      [convertAmount],
+      "0x", // No extra data
+    ],
+  });
+  txs.push({ to: HUB_V2, value: 0n, data: groupMintData });
+
+  // 2. wrap as group ERC-20 (type=1)
+  const wrapData = encodeFunctionData({
+    abi: hubAbi,
+    functionName: "wrap",
+    args: [BASE_GROUP, convertAmount, 1],
+  });
+  txs.push({ to: HUB_V2, value: 0n, data: wrapData });
+
+  // 3. Approve group token for vault relayer
+  const approveData = encodeFunctionData({
+    abi: erc20Abi,
+    functionName: "approve",
+    args: [VAULT_RELAYER, approveAmount],
+  });
+  txs.push({ to: groupToken, value: 0n, data: approveData });
+
+  return txs;
+}
+
+/**
+ * Encode operateFlowMatrix → wrap(group) → approve batch.
+ * For converting ERC-1155 personal tokens directly to group ERC-20 tokens.
+ */
+export function encodeErc1155ToGroupConversion(
+  flowMatrix: {
+    flowVertices: string[];
+    flowEdges: { streamSinkId: number; amount: string }[];
+    streams: { sourceCoordinate: number; flowEdgeIds: number[]; data: string }[];
+    packedCoordinates: string;
+  },
+  convertAmount: bigint,
+  groupToken: `0x${string}`,
+  approveAmount: bigint,
+): ModuleTransaction[] {
+  const txs: ModuleTransaction[] = [];
+
+  // 1. operateFlowMatrix — transfer ERC-1155 personal tokens through trust graph to BASE_GROUP
+  const flowData = encodeFunctionData({
+    abi: hubAbi,
+    functionName: "operateFlowMatrix",
+    args: [
+      flowMatrix.flowVertices as `0x${string}`[],
+      flowMatrix.flowEdges.map((e) => ({
+        streamSinkId: e.streamSinkId,
+        amount: BigInt(e.amount),
+      })),
+      flowMatrix.streams.map((s) => ({
+        sourceCoordinate: s.sourceCoordinate,
+        flowEdgeIds: s.flowEdgeIds,
+        data: (s.data || "0x") as `0x${string}`,
+      })),
+      flowMatrix.packedCoordinates as `0x${string}`,
+    ],
+  });
+  txs.push({ to: HUB_V2, value: 0n, data: flowData });
+
+  // 2. wrap as group ERC-20 (type=1)
+  const wrapData = encodeFunctionData({
+    abi: hubAbi,
+    functionName: "wrap",
+    args: [BASE_GROUP, convertAmount, 1],
+  });
+  txs.push({ to: HUB_V2, value: 0n, data: wrapData });
+
+  // 3. Approve group token for vault relayer
+  const approveData = encodeFunctionData({
+    abi: erc20Abi,
+    functionName: "approve",
+    args: [VAULT_RELAYER, approveAmount],
+  });
+  txs.push({ to: groupToken, value: 0n, data: approveData });
+
+  return txs;
+}
+
+/**
+ * Encode unwrap(personal ERC-20) → operateFlowMatrix → wrap(group) → approve batch.
+ * For converting existing wrapped personal ERC-20 tokens to group tokens.
+ */
+export function encodePersonalToGroupConversion(
+  flowMatrix: {
+    flowVertices: string[];
+    flowEdges: { streamSinkId: number; amount: string }[];
+    streams: { sourceCoordinate: number; flowEdgeIds: number[]; data: string }[];
+    packedCoordinates: string;
+  },
+  personalToken: `0x${string}`,
+  personalTokenBalance: bigint,
+  totalConvertAmount: bigint,
+  groupToken: `0x${string}`,
+  approveAmount: bigint,
+): ModuleTransaction[] {
+  const txs: ModuleTransaction[] = [];
+
+  // 1. Unwrap personal ERC-20 tokens back to ERC-1155 in the Hub
+  // The personal token's unwrap function converts ERC-20 back to ERC-1155
+  const unwrapData = encodeFunctionData({
+    abi: wrappedPersonalTokenAbi,
+    functionName: "unwrap",
+    args: [personalTokenBalance],
+  });
+  txs.push({ to: personalToken, value: 0n, data: unwrapData });
+
+  // 2. operateFlowMatrix — transfer personal ERC-1155 tokens through trust graph to BASE_GROUP
+  const flowData = encodeFunctionData({
+    abi: hubAbi,
+    functionName: "operateFlowMatrix",
+    args: [
+      flowMatrix.flowVertices as `0x${string}`[],
+      flowMatrix.flowEdges.map((e) => ({
+        streamSinkId: e.streamSinkId,
+        amount: BigInt(e.amount),
+      })),
+      flowMatrix.streams.map((s) => ({
+        sourceCoordinate: s.sourceCoordinate,
+        flowEdgeIds: s.flowEdgeIds,
+        data: (s.data || "0x") as `0x${string}`,
+      })),
+      flowMatrix.packedCoordinates as `0x${string}`,
+    ],
+  });
+  txs.push({ to: HUB_V2, value: 0n, data: flowData });
+
+  // 3. wrap as group ERC-20 (type=1)
+  const wrapData = encodeFunctionData({
+    abi: hubAbi,
+    functionName: "wrap",
+    args: [BASE_GROUP, totalConvertAmount, 1],
+  });
+  txs.push({ to: HUB_V2, value: 0n, data: wrapData });
+
+  // 4. Approve group token for vault relayer
+  const approveData = encodeFunctionData({
+    abi: erc20Abi,
+    functionName: "approve",
+    args: [VAULT_RELAYER, approveAmount],
+  });
+  txs.push({ to: groupToken, value: 0n, data: approveData });
+
+  return txs;
 }
 
 /**
